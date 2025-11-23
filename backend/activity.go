@@ -65,7 +65,9 @@ func (p *activityProcessor) ProcessWorkItem(ctx context.Context, awi *ActivityWo
 		}()
 	}
 
-	// set the parent trace context to be the newly created activity span
+	// Set the parent trace context to be the current span
+	// The OTel instrumentation will automatically propagate the trace context
+	// via gRPC metadata, so we don't need to manually pass traceparent
 	ts.ParentTraceContext = helpers.TraceContextFromSpan(span)
 
 	// Execute the activity and get its result
