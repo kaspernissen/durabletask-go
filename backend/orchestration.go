@@ -80,11 +80,6 @@ func (w *orchestratorProcessor) ProcessWorkItem(ctx context.Context, wi *Orchest
 			w.endOrchestratorSpan(ctx, wi, span, false)
 		}()
 
-		// Log the orchestration span context for tracing correlation
-		spanCtx := span.SpanContext()
-		w.logger.Infof("%v: ORCHESTRATION SPAN started: traceID=%s spanID=%s flags=%02x isValid=%v",
-			wi.InstanceID, spanCtx.TraceID(), spanCtx.SpanID(), spanCtx.TraceFlags(), spanCtx.IsValid())
-
 		for continueAsNewCount := 0; ; continueAsNewCount++ {
 			if continueAsNewCount > 0 {
 				w.logger.Debugf("%v: continuing-as-new with %d event(s): %s", wi.InstanceID, len(wi.State.NewEvents), helpers.HistoryListSummary(wi.State.NewEvents))
@@ -99,17 +94,8 @@ func (w *orchestratorProcessor) ProcessWorkItem(ctx context.Context, wi *Orchest
 			}
 			w.logger.Debugf("%v: orchestrator returned %d action(s): %s", wi.InstanceID, len(results.Actions), helpers.ActionListSummary(results.Actions))
 
-			// Log the trace context being passed to ApplyActions
-			traceCtxFromSpan := helpers.TraceContextFromSpan(span)
-			if traceCtxFromSpan != nil {
-				w.logger.Infof("%v: ApplyActions with traceContext: traceparent=%s tracestate=%v",
-					wi.InstanceID, traceCtxFromSpan.GetTraceParent(), traceCtxFromSpan.GetTraceState())
-			} else {
-				w.logger.Warnf("%v: ApplyActions with NIL traceContext (span is noop?)", wi.InstanceID)
-			}
-
 			// Apply the orchestrator outputs to the orchestration state.
-			continuedAsNew, err := runtimestate.ApplyActions(wi.State, results.CustomStatus, results.Actions, traceCtxFromSpan)
+			continuedAsNew, err := runtimestate.ApplyActions(wi.State, results.CustomStatus, results.Actions, helpers.TraceContextFromSpan(span))
 			if err != nil {
 				return fmt.Errorf("failed to apply the execution result actions: %w", err)
 			}
@@ -243,24 +229,18 @@ func (w *orchestratorProcessor) startOrResumeOrchestratorSpan(ctx context.Contex
 	var es *protos.ExecutionStartedEvent
 	if es = wi.State.StartEvent; es != nil {
 		ptc = wi.State.StartEvent.ParentTraceContext
-		w.logger.Infof("%v: Found ParentTraceContext from StartEvent: %v", wi.InstanceID, ptc)
 	} else {
 		for _, e := range wi.NewEvents {
 			if es = e.GetExecutionStarted(); es != nil {
 				ptc = es.ParentTraceContext
-				w.logger.Infof("%v: Found ParentTraceContext from NewEvents ExecutionStarted: %v", wi.InstanceID, ptc)
 				break
 			}
 		}
 	}
 
 	if ptc == nil {
-		w.logger.Warnf("%v: NO ParentTraceContext found on ExecutionStarted - returning NoopSpan (traces will be disconnected!)", wi.InstanceID)
 		return ctx, helpers.NoopSpan()
 	}
-
-	w.logger.Infof("%v: Parsing ParentTraceContext: traceparent=%s tracestate=%v",
-		wi.InstanceID, ptc.GetTraceParent(), ptc.GetTraceState())
 
 	ctx, err := helpers.ContextFromTraceContext(ctx, ptc)
 	if err != nil {

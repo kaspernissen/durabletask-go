@@ -52,32 +52,15 @@ func (p *activityProcessor) ProcessWorkItem(ctx context.Context, awi *ActivityWo
 		return fmt.Errorf("%v: invalid TaskScheduled event", awi.InstanceID)
 	}
 
-	// Log incoming trace context
-	if ts.ParentTraceContext != nil {
-		p.logger.Infof("%v/%s#%d: ACTIVITY received ParentTraceContext: traceparent=%s tracestate=%v",
-			awi.InstanceID, ts.Name, awi.NewEvent.EventId,
-			ts.ParentTraceContext.GetTraceParent(), ts.ParentTraceContext.GetTraceState())
-	} else {
-		p.logger.Warnf("%v/%s#%d: ACTIVITY has NO ParentTraceContext - activity will start new trace!",
-			awi.InstanceID, ts.Name, awi.NewEvent.EventId)
-	}
-
 	// Create span as child of spanContext found in TaskScheduledEvent
 	ctx, err := helpers.ContextFromTraceContext(ctx, ts.ParentTraceContext)
 	if err != nil {
-		p.logger.Warnf("%v/%s#%d: failed to parse activity trace context: %v",
-			awi.InstanceID, ts.Name, awi.NewEvent.EventId, err)
 		return fmt.Errorf("%v: failed to parse activity trace context: %w", awi.InstanceID, err)
 	}
 	var span trace.Span
 	ctx, span = helpers.StartNewActivitySpan(ctx, ts.Name, ts.Version.GetValue(), string(awi.InstanceID), awi.NewEvent.EventId)
 
-	// Log the activity span context
 	if span != nil {
-		spanCtx := span.SpanContext()
-		p.logger.Infof("%v/%s#%d: ACTIVITY SPAN started: traceID=%s spanID=%s flags=%02x",
-			awi.InstanceID, ts.Name, awi.NewEvent.EventId,
-			spanCtx.TraceID(), spanCtx.SpanID(), spanCtx.TraceFlags())
 		defer func() {
 			if r := recover(); r != nil {
 				span.SetStatus(codes.Error, fmt.Sprintf("%v", r))
@@ -86,14 +69,8 @@ func (p *activityProcessor) ProcessWorkItem(ctx context.Context, awi *ActivityWo
 		}()
 	}
 
-	// Set the parent trace context to be the current span
-	// The OTel instrumentation will automatically propagate the trace context
-	// via gRPC metadata, so we don't need to manually pass traceparent
-	newTraceCtx := helpers.TraceContextFromSpan(span)
-	ts.ParentTraceContext = newTraceCtx
-	p.logger.Infof("%v/%s#%d: ACTIVITY updated ParentTraceContext for executor: traceparent=%s",
-		awi.InstanceID, ts.Name, awi.NewEvent.EventId,
-		newTraceCtx.GetTraceParent())
+	// Set the parent trace context to be the current span for downstream propagation
+	ts.ParentTraceContext = helpers.TraceContextFromSpan(span)
 
 	// Execute the activity and get its result
 	result, err := p.executor.ExecuteActivity(ctx, awi.InstanceID, awi.NewEvent)
